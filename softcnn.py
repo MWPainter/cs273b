@@ -13,7 +13,7 @@ class softcnn():
 	initialiations
 	'''
 	def __init__(self, run_name, train_path, test_path, cell_types, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
-		logdir = "", , learning_rate = 0.002, write_to_log_frequency = 100, weight_decay = 0.01, if_save_model = True):
+		logdir = "", , learning_rate = 0.002, write_to_log_frequency = 100, weight_decay = 0.01, if_save_model = True, save_frequency = 5):
 		self.input_shape = input_shape
 		self.train_path  = train_path
 		self.test_path   = test_path
@@ -28,6 +28,7 @@ class softcnn():
 		self.write_to_log_frequency = write_to_log_frequency
 		self.run_name = run_name
 		self.if_save_model = if_save_model
+		self.save_frequency = save_frequency
 
 		self.saver = tf.train.Saver()
 
