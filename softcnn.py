@@ -38,6 +38,11 @@ class softcnn():
 		#sets up the writer for tensorboard functionality
 		if not os.path.isdir(logdir):
 			os.mkdir(logdir)
+
+		dir_path = os.path.dirname(os.path.realpath(__file__))
+		if not os.path.isdir(dir_path+"/result_graphs"):
+			os.mkdir(dir_path+"/result_graphs")
+
 		self.writer = tf.summary.FileWriter(logdir,self.sess.graph)
 		self.sess.run(tf.global_variables_initializer())
 
@@ -202,14 +207,14 @@ class softcnn():
 
 	def printGraph(train, test, name):
 		sns.set_style("darkgrid")
-		epochs = [i+1 for i in range(numberOfEpochs)]
+		epochs = [i+1 for i in range(self.num_epochs)]
 		plt.plot(epochs, test, 'r', label = "Test")
 		plt.plot(epochs, train, 'b', label = "Train")
 		plt.legend(loc = "upper left")	
 		plt.title(name+" vs. Epochs")
 		plt.xlabel("Epochs")
 		plt.ylabel(name)
-		plt.savefig(".png")
+		plt.savefig("result_graphs/%s_%s_train_vs_test_%i_epochs.png"%(self.run_name, name, self.num_epochs))
 		plt.clf()
 
 
