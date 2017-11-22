@@ -1,8 +1,11 @@
 import tensorflow as tf
+import numpy as np
+import nunpy.random as npr
 import layers
 import utils
 import seaborn as sns
 import matplotlib
+import time
 matplotlib.use("Agg")
 from matplotlib import plt
 
@@ -12,15 +15,20 @@ class softcnn():
 	'''
 	initialiations
 	'''
-	def __init__(self, run_name, train_path, test_path, cell_types, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
+	def __init__(self, run_name, data_path, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
 		logdir = "", , learning_rate = 0.002, write_to_log_frequency = 100, weight_decay = 0.01, if_save_model = True, save_frequency = 5):
 		self.input_shape = input_shape
-		self.train_path  = train_path
+		self.train_x  = np.load(data_path + "train_x.npy")
+		self.train_y  = np.load(data_path + "train_y.npy")
+		self.val_x  = np.load(data_path + "val_x.npy")
+		self.val_y  = np.load(data_path + "val_y.npy")
+		self.test_x  = np.load(data_path + "test_x.npy")
+		self.test_y  = np.load(data_path + "test_y.npy")
 		self.test_path   = test_path
 		self.batch_size = batch_size
 		self.learning_rate = learning_rate
 		self.num_labels = num_labels
-		self.cell_types = cell_types
+		self.cell_types = np.load(data_path + "target_labels.npy")
 		self.curr_step  = 0
 		self.curr_epoch = 0
 		self.num_epochs = num_epochs
@@ -31,6 +39,9 @@ class softcnn():
 		self.save_frequency = save_frequency
 
 		self.saver = tf.train.Saver()
+
+        # Seed npr, can change this to make det behaviour
+        npr.seed(int(time.time()))
 
 		#sets up the new tf session
 		tf.reset_default_graph()		
@@ -183,6 +194,18 @@ class softcnn():
 		return acc, loss, recall, precision, auc, msqe
 
 
+    def getBatch(self, batch_size, is_train):
+        """
+        Gets a (mini) batch from the dataset. 
+        Uses 'is_train' to decide if we draw from the training or validation set
+        N.B. Test is currently unused
+        """
+        data_x = train_x if is_train else val_x
+        data_y = train_y if is_train else val_y
+        perm = npr.choice(data_x.shape[0], batch_size, replace=False)
+        return data_x[perm], data_y[perm]
+
+
 	def run_epoch(self, is_train = True):
 		accuracies, losses, recalls, precisions, auces, msqes = [], [], [], [], [], []
 		for i in range(self.iterations):
@@ -192,7 +215,7 @@ class softcnn():
 			the "Input" is expected to be of shape (self.batch_size, 600, 4)
 			the "Label" is expected to be of shape (self.batch_size, self.num_labels)
 			'''
-			iter_input, iter_lbls = getBatch(self.batch_size)
+			iter_input, iter_lbls = getBatch(self.batch_size, is_train)
 			to_log = False
 			if i % self.write_to_log_frequency == 0: to_log = True
 			acc, loss, recall, precision, auc, msqe = self.run_iter(iter_input, iter_lbls, to_log, is_train)
