@@ -6,7 +6,8 @@ def main():
 	test_path  = ""
 	cell_types = ""
 	logdir = ""
-	model = softcnn(train_path, test_path, cell_types,batch_size = 50, num_epochs = 100, weight_decay = 0.01, logdir = "")
+	run_name = ""
+	model = softcnn(run_name, train_path, test_path, cell_types,batch_size = 50, num_epochs = 100, weight_decay = 0.01, logdir = "")
 	model.fit()
 	
 

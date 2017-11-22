@@ -12,8 +12,8 @@ class softcnn():
 	'''
 	initialiations
 	'''
-	def __init__(self, train_path, test_path, cell_types, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
-		logdir = "", , learning_rate = 0.002, write_to_log_frequency = 100, weight_decay = 0.01):
+	def __init__(self, run_name, train_path, test_path, cell_types, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
+		logdir = "", , learning_rate = 0.002, write_to_log_frequency = 100, weight_decay = 0.01, if_save_model = True):
 		self.input_shape = input_shape
 		self.train_path  = train_path
 		self.test_path   = test_path
@@ -26,6 +26,10 @@ class softcnn():
 		self.num_epochs = num_epochs
 		self.weight_decay = weight_decay
 		self.write_to_log_frequency = write_to_log_frequency
+		self.run_name = run_name
+		self.if_save_model = if_save_model
+
+		self.saver = tf.train.Saver()
 
 		#sets up the new tf session
 		tf.reset_default_graph()		
@@ -42,6 +46,9 @@ class softcnn():
 		dir_path = os.path.dirname(os.path.realpath(__file__))
 		if not os.path.isdir(dir_path+"/result_graphs"):
 			os.mkdir(dir_path+"/result_graphs")
+
+		if not os.path.isdir(dir_path+"/checkpoints"):
+			os.mkdir(dir_path+"/checkpoints")
 
 		self.writer = tf.summary.FileWriter(logdir,self.sess.graph)
 		self.sess.run(tf.global_variables_initializer())
@@ -188,6 +195,7 @@ class softcnn():
 			to_log = False
 			if i % self.write_to_log_frequency == 0: to_log = True
 			acc, loss, recall, precision, auc, msqe = self.run_iter(iter_input, iter_lbls, to_log, is_train)
+			
 			accuracies.append(acc)
 			losses.append(loss)
 			recalls.append(recall)
@@ -255,6 +263,9 @@ class softcnn():
 			print("----AUC: %.3f"%auc)
 			print("----MSQE: %0.3f"%msqe)
 			print("---------------------------")
+			if self.if_save_model:
+				if self.curr_epoch % self.save_frequency == 0:
+					self.saver.save(self.sess,"checkpoints/%s_epoch_%i_step_%i.ckpt"%(self.run_name,self.curr_epoch, self.curr_step))
 
 		printGraph(train_acc, test_acc, "Accuracy")
 		printGraph(train_loss, test_loss, "Loss")
