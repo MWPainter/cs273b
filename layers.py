@@ -28,7 +28,7 @@ def max_pool(x, size = 2, strides = [1,1,1,1], padding = 'SAME', name = ""):
 
 def max_pool1d(x, size, stride, padding = 'SAME', name = ""):
 	with tf.variable_scope("max_pool%i"%size):
-		return tf.nn.pool(A, [size], 'MAX', padding, strides = [stride])
+		return tf.nn.pool(x, [size], 'MAX', padding, strides = [stride])
 
 def avg_pool(x, size = 2, strides = [1,1,1,1], padding = 'SAME', name = ""):
 	with tf.variable_scope("avg_pool%ix%i"%(i,i)):
@@ -45,14 +45,14 @@ def conv2dLayer(x, filterSize, outputDim, strides = [1,1,1,1], padding = 'SAME',
 		conv = conv2d(x, W, strides, padding = padding)
 		return tf.nn.relu(tf.nn.bias_add(conv, b))
 
-def conv1dLayer(x,filterSize,outputDim,stride = 1, padding = "SAME", name = "")
+def conv1dLayer(x, filterSize, outputDim, stride = 1, padding = "SAME", name = ""):
 	with tf.variable_scope("conv1d"):
 		shape = x.get_shape().as_list()
 		inputDim = shape[2]
 
 		W = weight_variable([filterSize,inputDim,outputDim], name = name)
 		b = bias_variable([outputDim], name = name)
-		conv = conv2d(x, W, strides, padding = padding)
+		conv = conv1d(x, W, stride, padding = padding)
 		return tf.nn.relu(tf.nn.bias_add(conv, b))
 
 
