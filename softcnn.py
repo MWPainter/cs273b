@@ -1,19 +1,32 @@
+import matplotlib
+matplotlib.use("Agg")
 import tensorflow as tf
 import numpy as np
 import numpy.random as npr
 import layers
 import utils
 import seaborn as sns
-import matplotlib
 import time
 from tqdm import trange
+import matplotlib.pyplot as plt
 import os
-matplotlib.use("Agg")
-import matplotlib as plt
+import signal
 
+# custom SIGINT handler
+ctrl_c_count = 0
+def inthandler(signum, frame):
+    global ctrl_c_count
+    if ctrl_c_count == 1: quit()
+    ctrl_c_count += 1
+
+# Set SIGINT handler
+signal.signal(signal.SIGINT, inthandler)
 
 def mean(arr):
     return np.mean(np.array(arr))
+
+def flatten(arr_arr):
+    return [val for arr in arr_arr for val in arr]
 
 
 class softcnn():
@@ -22,8 +35,8 @@ class softcnn():
     initialiations
     '''
     def __init__(self, run_name, data_path, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
-                 basedir = "", logdir = "", learning_rate = 0.002, weight_decay = 0.01, if_save_model = True, save_frequency = 5, test_eval_frequency = 50, val_eval_frequency = 50, 
-                 val_batch_size = 50):
+                 basedir = "", logdir = "", learning_rate = 0.005, weight_decay = 0.01, if_save_model = True, save_frequency = 5, test_eval_frequency = 50, val_eval_frequency = 50, 
+                 val_batch_size = 100, weight_distance_penalty = 10.0): #0.00000025):
 
         self.input_shape = input_shape
         self.batch_size = batch_size
@@ -41,6 +54,7 @@ class softcnn():
         self.val_batch_size = val_batch_size
         self.basedir = basedir
         self.logdir = logdir
+        self.weight_distance_penalty = weight_distance_penalty
 
         # load in data - convert labels from (None, 164) to (None, 164, 2)
         # for 0 labels, pick 0th column from Identity matrix, and 1 labels pick 1st column
@@ -56,16 +70,21 @@ class softcnn():
         self.cell_types = np.load(data_path + "target_labels.npy")
         self.class_ratios = self.compute_train_set_class_imballances(np.load(data_path + "train_y.npy"))
         self.example_weightings = self.train_y[:,:,0] * self.class_ratios + self.train_y[:,:,1] * (1 - self.class_ratios)
+        self.avg_weighting = np.mean(self.example_weightings)
+
+        self.learning_rate /= self.avg_weighting * 2  # account for multiplying by small numbers in the loss, by dividing by a smallish number
 
         self.iterations = (self.train_x.shape[0] + batch_size - 1) / batch_size
 
         # FOR TESTING WITH OVERFITTING:
-        self.train_x = self.train_x[:5000]
-        self.train_y = self.train_y[:5000,:41]#3]
-        self.val_x = self.val_x[:500]
-        self.val_y = self.val_y[:500,:41]#3]
-        self.num_labels = 41#3
-        self.example_weightings = self.example_weightings[:5000,:41]#3]
+        #self.train_x = self.train_x[:5000]
+        self.train_y = self.train_y[:,:15]#3]
+        #self.val_x = self.val_x[:500]
+        self.val_y = self.val_y[:,:15]#3]
+        self.num_labels = 15#3
+        self.class_ratios = self.compute_train_set_class_imballances(np.load(data_path + "train_y.npy")[:,:15])
+        self.example_weightings = self.train_y[:,:,0] * self.class_ratios + self.train_y[:,:,1] * (1 - self.class_ratios)
+        self.avg_weighting = np.mean(self.example_weightings)
 
         self.iterations = (self.train_x.shape[0] + batch_size - 1) / batch_size
 
@@ -113,17 +132,19 @@ class softcnn():
         self.lbls = tf.placeholder(tf.float32, shape=[None, self.num_labels, 2])
         self.weightings = tf.placeholder(tf.float32, shape=[None, self.num_labels])
         self.is_train = tf.placeholder(tf.bool)
-        self.losses = []
+        self.train_objective_losses = []
+        self.test_objective_losses = []
+        self.train_total_objective_loss = 0
+        self.test_total_objective_loss = 0
         self.accuracies, self.aucs, self.msqes, self.recalls, self.precisions = [],[],[],[],[]
         self.accuracy_update_ops, self.auc_update_ops, self.msqe_update_ops, self.recall_update_ops, self.precision_update_ops = [],[],[],[],[]
-        self.total_loss = 0
 
         for i in range(self.num_labels):
             print("----Cell Type: " + self.cell_types[i])
             with tf.variable_scope(self.cell_types[i].replace('+','')):
                 lbl = self.lbls[:,i,:]
                 lbl = tf.reshape(lbl,[tf.shape(self.lbls)[0], 2])
-                self.add_task_model_to_graph(lbl)
+                self.add_task_model_to_graph(lbl, i)
 
         
         print("----Constructing evaluation, loss, optimizaer and tensorboard ops")
@@ -135,15 +156,17 @@ class softcnn():
         self.precision = tf.divide(tf.add_n(self.precisions), self.num_labels)
 
         self.weight_distance = self.construct_weight_distance()
-        self.total_loss /= self.num_labels
-        self.objective_loss = self.total_loss
-        self.total_loss += self.distance_penalty * self.weight_distance
+        self.train_total_objective_loss /= self.num_labels
+        self.total_train_loss = self.train_total_objective_loss + self.weight_distance_penalty * self.weight_distance
+        self.test_total_objective_loss /= self.num_labels
+        self.total_test_loss = self.test_total_objective_loss
 
-        self.train_step = tf.train.AdamOptimizer(self.learning_rate).minimize(self.total_loss)
+        self.optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        self.train_step = self.optimizer.minimize(self.total_train_loss)
 
         #TENSORBOARD operators
-        self.train_loss_op = tf.summary.scalar("train_loss", self.total_loss)
-        self.test_loss_op  = tf.summary.scalar("test_loss",  self.total_loss)
+        self.train_loss_op = tf.summary.scalar("train_loss", self.total_train_loss)
+        self.test_loss_op  = tf.summary.scalar("test_loss",  self.total_test_loss)
         self.train_acc_op = tf.summary.scalar("train_accuracy", self.accuracy)
         self.test_acc_op = tf.summary.scalar("test_accuracy", self.accuracy)
         self.train_prec_op = tf.summary.scalar("train_precision", self.precision)
@@ -152,10 +175,18 @@ class softcnn():
         self.test_recall_op = tf.summary.scalar("test_recall", self.recall)
         self.train_auc_op = tf.summary.scalar("train_auc", self.auc)
         self.test_auc_op = tf.summary.scalar("test_auc", self.auc)
+        self.train_msqe_op = tf.summary.scalar("train_msqe", self.msqe)
+        self.test_msqe_op = tf.summary.scalar("test_msqe", self.msqe)
 
-        self.tb_objective_loss_op = tf.summary.scalar("objective_loss", self.objective_loss)
-        self.tb_weight_distance_loss_op = tf.summary.scalar("weight_distance_loss", self.distance_penalty * self.weight_distance)
+        self.tb_train_objective_loss_op = tf.summary.scalar("train_objective_loss", self.train_total_objective_loss)
+        self.tb_test_objective_loss_op = tf.summary.scalar("test_objective_loss", self.test_total_objective_loss)
+        self.tb_weight_distance_op = tf.summary.scalar("weight_distance_loss_unweighted", self.weight_distance)
+        self.tb_weight_distance_loss_op = tf.summary.scalar("weight_distance_loss", self.weight_distance_penalty * self.weight_distance)
         
+        weights_norm, grads_norm, grad_to_weights_ratio = self.construct_sanity_checks()
+        self.tb_weights_op = tf.summary.scalar("weights_norm", weights_norm)
+        self.tb_grads_op = tf.summary.scalar("gradient_norm", grads_norm)
+        self.tb_grad_to_weight_ratio_op = tf.summary.scalar("grad_to_weight_ratio", grad_to_weights_ratio)
         
         print("---------------------------")
 
@@ -168,10 +199,7 @@ class softcnn():
         Computes a vector of shape (self.num_labels) with the class imballances present in the dataset with labels 'labels'
         NOTE: this assumes that train_y is currently of shape (num_examples, num_tasks)
         """
-        data_set_size = labels.shape[0]
-        class_sums = np.sum(labels, axis=0)
-        class_ratios = class_sums / float(data_set_size)
-        return class_ratios
+        return np.mean(labels, axis=0)
 
 
 
@@ -200,6 +228,11 @@ class softcnn():
         train_loss = tf.reduce_mean(tf.multiply(self.weightings[:,tasknum], tf.nn.softmax_cross_entropy_with_logits(labels = lbls, logits = y_conv)))
         test_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = lbls, logits = y_conv))
         # train_step = tf.train.AdamOptimizer(self.learning_rate).minimize(loss)
+    
+        self.train_objective_losses.append(train_loss)
+        self.train_total_objective_loss += train_loss
+        self.test_objective_losses.append(test_loss)
+        self.test_total_objective_loss += test_loss
         
         correct_labels = tf.argmax(lbls,1) # convert back from one hot
         predictions = tf.argmax(y_conv, 1)
@@ -209,9 +242,6 @@ class softcnn():
         precision, precision_op = tf.metrics.precision(correct_labels, predictions)
         auc, auc_op             = tf.metrics.auc(correct_labels, predictions)
         msqe, msqe_op           = tf.metrics.mean_squared_error(correct_labels, predictions)
-
-        self.losses.append(loss)
-        self.total_loss += loss
 
         self.accuracies.append(accuracy)
         self.accuracy_update_ops.append(accuracy_op)
@@ -232,15 +262,41 @@ class softcnn():
         """
         Constructs the sum of the distances between each pair of corresponding weights
         """
-        conv1_weights = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv1_weights:0')]
-        conv2_weights = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv2_weights:0')]
-        conv3_weights = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv3_weights:0')]
+        conv1_weights = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv1_weight:0')]
+        conv1_biases = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv1_bias:0')]
+        conv2_weights = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv2_weight:0')]
+        conv2_biases = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv2_bias:0')]
+        conv3_weights = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv3_weight:0')]
+        conv3_biases = [v for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if v.name.endswith('conv3_bias:0')]
 
         total_dist = 0
         total_dist += self.pairwise_distances(conv1_weights)
+        total_dist += self.pairwise_distances(conv1_biases)
         total_dist += self.pairwise_distances(conv2_weights)
+        total_dist += self.pairwise_distances(conv2_biases)
         total_dist += self.pairwise_distances(conv3_weights)
+        total_dist += self.pairwise_distances(conv3_biases)
 
+        # I know it's weird to do it like this, but there's some weird typing issues that means I can't use np.prod
+        pairs = 0.0
+        pairs += self.param_pairs(conv1_weights)
+        pairs += self.param_pairs(conv2_weights)
+        pairs += self.param_pairs(conv3_weights)
+        pairs += self.param_pairs(conv1_biases)
+        pairs += self.param_pairs(conv2_biases)
+        pairs += self.param_pairs(conv3_biases)
+
+        return total_dist / pairs
+
+
+
+    def param_pairs(self, arr_of_weights):
+        leng = len(arr_of_weights)
+        weight = arr_of_weights[0]
+        params_per_var = 1
+        for dim in weight.shape:
+            params_per_var *= dim.value
+        return params_per_var * (leng * (leng - 1) / 2)
 
 
 
@@ -252,9 +308,29 @@ class softcnn():
         """
         dist = 0
         for i in range(len(weights)):
-            for j in range(i+1, len(weights)):
+            for j in range(i, len(weights)):
                 dist += tf.nn.l2_loss(weights[i] - weights[j])
         return dist
+
+
+
+
+    def construct_sanity_checks(self):
+        """
+        This must be called after the complete graph has been constructed
+
+        Computes the gradient
+        Computes the magnitude of the all of the weights
+        Computes ops for the ratio of the two
+        """
+        weights_norm = tf.sqrt(tf.global_norm(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)))
+        grads_and_var_pairs = self.optimizer.compute_gradients(self.total_train_loss)
+        grads = zip(*grads_and_var_pairs)[0] 
+        grads_norm = tf.sqrt(tf.global_norm(grads))
+
+        grad_to_weights_ratio = self.learning_rate * grads_norm / weights_norm
+
+        return weights_norm, grads_norm, grad_to_weights_ratio
 
 
 
@@ -264,9 +340,11 @@ class softcnn():
     def run_iter(self, iter_number):
         """
         Runs a training step + computes loss, given a minibatch
+        Runs (in parallel) the gradient computations (because we may as well not repeat work) and logs it to tb variables
+        Also updates a global counter of the number of training steps that we've made
         """
         iter_input, iter_lbls, weights = self.get_batch(iter_number)
-        feed_dict = {self.x: iter_input, self.lbls: iter_lbls, self.example_weightings: weights, self.is_train: True}
+        feed_dict = {self.x: iter_input, self.lbls: iter_lbls, self.weightings: weights, self.is_train: True} 
         self.sess.run(self.train_step, feed_dict=feed_dict)
         self.curr_step += 1
 
@@ -274,25 +352,28 @@ class softcnn():
 
 
 
-    def evaluate(self):
+    def evaluate_validation(self):
         """
         Computes evaluation metrics on the val set.  + prints summaries for tensorboard
+        (Unless it was more efficient to do these ops in run_iter)
         """
         batch_input, batch_lbls = self.sample_val_batch()
-        acc, loss, recall, precision, auc, msqe = self.eval_batch(batch_input, batch_lbls, False)
 
+        eval_ops = [self.accuracy, self.total_test_loss, self.recall, self.precision, self.auc, self.msqe, \
+                self.test_acc_op, self.test_loss_op, self.test_recall_op, self.test_prec_op, self.test_auc_op, self.test_msqe_op, self.tb_test_objective_loss_op]
         feed_dict = {self.x: batch_input, self.lbls: batch_lbls, self.is_train: False}
-        loss_str = self.sess.run(self.test_loss_op, feed_dict=feed_dict)
-        acc_str = self.sess.run(self.test_acc_op , feed_dict=feed_dict)
-        prec_str = self.sess.run(self.test_prec_op, feed_dict=feed_dict)
-        recall_str = self.sess.run(self.test_recall_op, feed_dict=feed_dict)
-        auc_str = self.sess.run(self.test_auc_op, feed_dict=feed_dict)
+
+        self.sess.run(tf.local_variables_initializer())
+        self.sess.run(self.update_eval_metrics_ops, feed_dict=feed_dict)
+        acc, loss, recall, precision, auc, msqe, acc_str, loss_str, recall_str, prec_str, auc_str, msqe_str, obj_loss_str = self.sess.run(eval_ops, feed_dict=feed_dict)
         
         self.writer.add_summary(acc_str, self.curr_step)
         self.writer.add_summary(loss_str, self.curr_step)
-        self.writer.add_summary(prec_str, self.curr_step)
         self.writer.add_summary(recall_str, self.curr_step)
+        self.writer.add_summary(prec_str, self.curr_step)
         self.writer.add_summary(auc_str, self.curr_step)
+        self.writer.add_summary(msqe_str, self.curr_step)
+        self.writer.add_summary(obj_loss_str, self.curr_step)
 
         return acc, loss, recall, precision, auc, msqe
 
@@ -300,22 +381,44 @@ class softcnn():
 
     
 
-    def eval_batch(self, iter_input, iter_lbls, is_train):
+    def eval_train_batch(self, iter_number):
         """
         Runs the evaluation operators, given a minibatch
         """
-        feed_dict = {self.x: iter_input, self.lbls: iter_lbls, self.is_train: is_train}
+        iter_input, iter_lbls, weights = self.get_batch(iter_number)
+
+        eval_ops = [self.accuracy, self.total_train_loss, self.recall, self.precision, self.auc, self.msqe, \
+                self.train_acc_op, self.train_loss_op, self.train_recall_op, self.train_prec_op, self.train_auc_op, self.train_msqe_op, \
+                self.tb_train_objective_loss_op, self.tb_weight_distance_loss_op, self.tb_weight_distance_op, self.tb_weights_op, self.tb_grads_op, self.tb_grad_to_weight_ratio_op]
+        feed_dict = {self.x: iter_input, self.lbls: iter_lbls, self.weightings: weights, self.is_train: True}
+
         self.sess.run(tf.local_variables_initializer())
         self.sess.run(self.update_eval_metrics_ops, feed_dict=feed_dict)
-        acc = self.sess.run(self.accuracy, feed_dict=feed_dict)
-        loss = self.sess.run(self.total_loss, feed_dict=feed_dict)
-        recall = self.sess.run(self.recall, feed_dict=feed_dict)
-        precision = self.sess.run(self.precision, feed_dict=feed_dict)
-        auc = self.sess.run(self.auc, feed_dict=feed_dict)
-        msqe = self.sess.run(self.msqe, feed_dict=feed_dict)
-        
-        return acc, loss, recall, precision, auc, msqe
+        acc, loss, recall, precision, auc, msqe = \
+                self.sess.run([self.accuracy, self.total_train_loss, self.recall, self.precision, self.auc, self.msqe], feed_dict=feed_dict)
+        acc_str, loss_str, recall_str, prec_str, auc_str, msqe_str = \
+                self.sess.run([self.train_acc_op, self.train_loss_op, self.train_recall_op, self.train_prec_op, self.train_auc_op, self.train_msqe_op], feed_dict=feed_dict)
+        obj_loss_str, weight_dist_loss_str, weight_dist_str, weights_str, grads_str, grad_to_weight_ratio_str = \
+                self.sess.run([self.tb_train_objective_loss_op, self.tb_weight_distance_loss_op, self.tb_weight_distance_op, \
+                               self.tb_weights_op, self.tb_grads_op, self.tb_grad_to_weight_ratio_op], feed_dict=feed_dict)
 
+        #acc, loss, recall, precision, auc, msqe, acc_str, loss_str, recall_str, prec_str, auc_str, msqe_str, \
+        #        obj_loss_str, weight_dist_loss_str, weight_dist_str, weights_str, grads_str, grad_to_weight_ratio_str = self.sess.run(eval_ops, feed_dict=feed_dict)
+        
+        self.writer.add_summary(acc_str, self.curr_step)
+        self.writer.add_summary(loss_str, self.curr_step)
+        self.writer.add_summary(recall_str, self.curr_step)
+        self.writer.add_summary(prec_str, self.curr_step)
+        self.writer.add_summary(auc_str, self.curr_step)
+        self.writer.add_summary(msqe_str, self.curr_step)
+        self.writer.add_summary(obj_loss_str, self.curr_step)
+        self.writer.add_summary(weight_dist_loss_str, self.curr_step)
+        self.writer.add_summary(weight_dist_str, self.curr_step)
+        self.writer.add_summary(weights_str, self.curr_step)
+        self.writer.add_summary(grads_str, self.curr_step)
+        self.writer.add_summary(grad_to_weight_ratio_str, self.curr_step)
+
+        return acc, loss, recall, precision, auc, msqe
 
 
 
@@ -350,18 +453,12 @@ class softcnn():
         accuracies, losses, recalls, precisions, aucs, msqes = [], [], [], [], [], []
         v_accuracies, v_losses, v_recalls, v_precisions, v_aucs, v_msqes = [], [], [], [], [], []
         for i in trange(self.iterations):
-            '''
-            getBatch() is not  a real function yet, 
-            needs to be implemented to return a (input,label) pair
-            the "Input" is expected to be of shape (self.batch_size, 600, 4)
-            the "Label" is expected to be of shape (self.batch_size, self.num_labels)
-            '''
-            iter_input, iter_lbls = self.get_batch(i)
+            if ctrl_c_count == 1: break
+
             self.run_iter(i)
             
             if self.curr_step % self.test_eval_frequency == 0:
-                acc, loss, recall, precision, auc, msqe = self.eval_batch(iter_input, iter_lbls, True)
-
+                acc, loss, recall, precision, auc, msqe = self.eval_train_batch(i)
                 accuracies.append(acc)
                 losses.append(loss)
                 recalls.append(recall)
@@ -369,21 +466,9 @@ class softcnn():
                 aucs.append(auc)
                 msqes.append(msqe)
         
-                feed_dict = {self.x: iter_input, self.lbls: iter_lbls, self.is_train: True}
-                loss_str = self.sess.run(self.train_loss_op, feed_dict=feed_dict)
-                acc_str = self.sess.run(self.train_acc_op , feed_dict=feed_dict)
-                prec_str = self.sess.run(self.train_prec_op, feed_dict=feed_dict)
-                recall_str = self.sess.run(self.train_recall_op, feed_dict=feed_dict)
-                auc_str = self.sess.run(self.train_auc_op, feed_dict=feed_dict)
-                   
-                self.writer.add_summary(acc_str, self.curr_step)
-                self.writer.add_summary(loss_str, self.curr_step)
-                self.writer.add_summary(prec_str, self.curr_step)
-                self.writer.add_summary(recall_str, self.curr_step)
-                self.writer.add_summary(auc_str, self.curr_step)
 
             if self.curr_step % self.val_eval_frequency == 0:
-                acc, loss, recall, precision, auc, msqe = self.evaluate()
+                acc, loss, recall, precision, auc, msqe = self.evaluate_validation()
                 v_accuracies.append(acc)
                 v_losses.append(loss)
                 v_recalls.append(recall)
@@ -399,16 +484,17 @@ class softcnn():
 
 
 
-    def printGraph(train, test, name):
+    def printGraph(self, train, test, name):
         sns.set_style("darkgrid")
-        epochs = [i+1 for i in range(self.num_epochs)]
-        plt.plot(epochs, test, 'r', label = "Test")
-        plt.plot(epochs, train, 'b', label = "Train")
+        epochs_test = [i+1 for i in range(len(test))]
+        epochs_train = [i+1 for i in range(len(train))]
+        plt.plot(epochs_test, test, 'r', label = "Test")
+        plt.plot(epochs_train, train, 'b', label = "Train")
         plt.legend(loc = "upper left")    
         plt.title(name+" vs. Epochs")
         plt.xlabel("Epochs")
         plt.ylabel(name)
-        plt.savefig("result_graphs/%s_%s_train_vs_test_%i_epochs.png"%(self.run_name, name, self.num_epochs))
+        plt.savefig(self.basedir+"/result_graphs/%s_%s_train_vs_test_%i_epochs.png"%(self.run_name, name, self.num_epochs))
         plt.clf()
 
 
@@ -421,6 +507,7 @@ class softcnn():
         test_acc, test_loss, test_recall, test_precision, test_auc, test_msqe = [],[],[],[],[],[]
 
         for i in range(self.num_epochs):
+            if ctrl_c_count == 1: break
             self.curr_epoch += 1
             print("-----STARTING EPOCH %i-----"%self.curr_epoch)
             acc, loss, recall, precision, auc, msqe, \
@@ -456,10 +543,10 @@ class softcnn():
                 if self.curr_epoch % self.save_frequency == 0:
                     self.saver.save(self.sess, self.basedir+"checkpoints/%s_epoch_%i_step_%i.ckpt"%(self.run_name,self.curr_epoch, self.curr_step))
 
-        printGraph(train_acc, test_acc, "Accuracy")
-        printGraph(train_loss, test_loss, "Loss")
-        printGraph(train_recall, test_recall, "Recall")
-        printGraph(train_precision, test_precision, "Precision")
-        printGraph(train_auc, test_auc, "Area Under ROC Curve")
-        printGraph(train_msqe, test_msqe, "Mean Squared Error")
+        self.printGraph(flatten(train_acc), flatten(test_acc), "Accuracy")
+        self.printGraph(flatten(train_loss), flatten(test_loss), "Loss")
+        self.printGraph(flatten(train_recall), flatten(test_recall), "Recall")
+        self.printGraph(flatten(train_precision), flatten(test_precision), "Precision")
+        self.printGraph(flatten(train_auc), flatten(test_auc), "Area Under ROC Curve")
+        self.printGraph(flatten(train_msqe), flatten(test_msqe), "Mean Squared Error")
 
