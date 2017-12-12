@@ -2,7 +2,7 @@ import tensorflow as tf
 from softcnn import softcnn
 
 def main():
-    run_name = "soft_run_4"
+    run_name = "soft_small_set_0"
     data_path = "/mnt/data/"
     basedir = "/mnt/" + run_name + "/"
     logdir = basedir + "logs/"

@@ -35,8 +35,8 @@ class softcnn():
     initialiations
     '''
     def __init__(self, run_name, data_path, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
-                 basedir = "", logdir = "", learning_rate = 0.005, weight_decay = 0.01, if_save_model = True, save_frequency = 5, test_eval_frequency = 50, val_eval_frequency = 50, 
-                 val_batch_size = 100, weight_distance_penalty = 10.0): #0.00000025):
+                 basedir = "", logdir = "", learning_rate = 0.005, weight_decay = 0.01, if_save_model = True, save_frequency = 5, train_eval_frequency = 50, val_eval_frequency = 50, validation_iters = 10,
+                 val_batch_size = 50, weight_distance_penalty = 10.0): #0.00000025):
 
         self.input_shape = input_shape
         self.batch_size = batch_size
@@ -49,12 +49,13 @@ class softcnn():
         self.run_name = run_name
         self.if_save_model = if_save_model
         self.save_frequency = save_frequency
-        self.test_eval_frequency = test_eval_frequency
+        self.train_eval_frequency = train_eval_frequency
         self.val_eval_frequency = val_eval_frequency
         self.val_batch_size = val_batch_size
         self.basedir = basedir
         self.logdir = logdir
         self.weight_distance_penalty = weight_distance_penalty
+        self.validation_iters = validation_iters
 
         # load in data - convert labels from (None, 164) to (None, 164, 2)
         # for 0 labels, pick 0th column from Identity matrix, and 1 labels pick 1st column
@@ -77,14 +78,27 @@ class softcnn():
         self.iterations = (self.train_x.shape[0] + batch_size - 1) / batch_size
 
         # FOR TESTING WITH OVERFITTING:
-        #self.train_x = self.train_x[:5000]
-        self.train_y = self.train_y[:,:15]#3]
-        #self.val_x = self.val_x[:500]
-        self.val_y = self.val_y[:,:15]#3]
-        self.num_labels = 15#3
-        self.class_ratios = self.compute_train_set_class_imballances(np.load(data_path + "train_y.npy")[:,:15])
+        cell_types = self.cell_types.tolist()
+        self.tasks = [cell_types.index("HPF"),
+                      cell_types.index("HepG2"),
+                      cell_types.index("SKIN.PEN.FRSK.KER.02"),
+                      cell_types.index("PLCNT.FET"),
+                      cell_types.index("PrEC"),
+                      cell_types.index("HConF"),
+                      cell_types.index("GM18507"),
+                      cell_types.index("ESDR.H1.BMP4.MESO"),
+                      cell_types.index("OVRY"),
+                      cell_types.index("NHLF")]
+        self.cell_types = self.cell_types[self.tasks]
+        #self.train_x = self.train_x[:45000]
+        self.train_y = self.train_y[:,self.tasks]#3]
+        #self.val_x = self.val_x[:5000]
+        self.val_y = self.val_y[:,self.tasks]#3]
+        self.num_labels = 10#3
+        self.class_ratios = self.compute_train_set_class_imballances(np.load(data_path + "train_y.npy")[:,self.tasks])
         self.example_weightings = self.train_y[:,:,0] * self.class_ratios + self.train_y[:,:,1] * (1 - self.class_ratios)
         self.avg_weighting = np.mean(self.example_weightings)
+        self.example_weightings = 1.0 # get rid of any weightings...
 
         self.iterations = (self.train_x.shape[0] + batch_size - 1) / batch_size
 
@@ -309,7 +323,8 @@ class softcnn():
         dist = 0
         for i in range(len(weights)):
             for j in range(i, len(weights)):
-                dist += tf.nn.l2_loss(weights[i] - weights[j])
+                diff = weights[i] if i == j else weights[i] - weights[j]
+                dist += tf.nn.l2_loss(diff)
         return dist
 
 
@@ -357,25 +372,35 @@ class softcnn():
         Computes evaluation metrics on the val set.  + prints summaries for tensorboard
         (Unless it was more efficient to do these ops in run_iter)
         """
-        batch_input, batch_lbls = self.sample_val_batch()
+        accs, losses, recalls, precisions, aucs, msqes = [], [], [], [], [], []
 
-        eval_ops = [self.accuracy, self.total_test_loss, self.recall, self.precision, self.auc, self.msqe, \
-                self.test_acc_op, self.test_loss_op, self.test_recall_op, self.test_prec_op, self.test_auc_op, self.test_msqe_op, self.tb_test_objective_loss_op]
-        feed_dict = {self.x: batch_input, self.lbls: batch_lbls, self.is_train: False}
+        for i in range(self.validation_iters):
+            batch_input, batch_lbls = self.sample_val_batch()
 
-        self.sess.run(tf.local_variables_initializer())
-        self.sess.run(self.update_eval_metrics_ops, feed_dict=feed_dict)
-        acc, loss, recall, precision, auc, msqe, acc_str, loss_str, recall_str, prec_str, auc_str, msqe_str, obj_loss_str = self.sess.run(eval_ops, feed_dict=feed_dict)
+            eval_ops = [self.accuracy, self.total_test_loss, self.recall, self.precision, self.auc, self.msqe, \
+                    self.test_acc_op, self.test_loss_op, self.test_recall_op, self.test_prec_op, self.test_auc_op, self.test_msqe_op, self.tb_test_objective_loss_op]
+            feed_dict = {self.x: batch_input, self.lbls: batch_lbls, self.is_train: False}
+
+            self.sess.run(tf.local_variables_initializer())
+            self.sess.run(self.update_eval_metrics_ops, feed_dict=feed_dict)
+            acc, loss, recall, precision, auc, msqe, acc_str, loss_str, recall_str, prec_str, auc_str, msqe_str, obj_loss_str = self.sess.run(eval_ops, feed_dict=feed_dict)
+
+            accs.append(acc)
+            losses.append(loss)
+            recalls.append(recall)
+            precisions.append(precision)
+            aucs.append(auc)
+            msqes.append(msqe)
         
-        self.writer.add_summary(acc_str, self.curr_step)
-        self.writer.add_summary(loss_str, self.curr_step)
-        self.writer.add_summary(recall_str, self.curr_step)
-        self.writer.add_summary(prec_str, self.curr_step)
-        self.writer.add_summary(auc_str, self.curr_step)
-        self.writer.add_summary(msqe_str, self.curr_step)
-        self.writer.add_summary(obj_loss_str, self.curr_step)
+            self.writer.add_summary(acc_str, self.curr_step)
+            self.writer.add_summary(loss_str, self.curr_step)
+            self.writer.add_summary(recall_str, self.curr_step)
+            self.writer.add_summary(prec_str, self.curr_step)
+            self.writer.add_summary(auc_str, self.curr_step)
+            self.writer.add_summary(msqe_str, self.curr_step)
+            self.writer.add_summary(obj_loss_str, self.curr_step)
 
-        return acc, loss, recall, precision, auc, msqe
+        return mean(accs), mean(losses), mean(recalls), mean(precisions), mean(aucs), mean(msqes)
 
 
 
@@ -457,7 +482,7 @@ class softcnn():
 
             self.run_iter(i)
             
-            if self.curr_step % self.test_eval_frequency == 0:
+            if self.curr_step % self.train_eval_frequency == 0:
                 acc, loss, recall, precision, auc, msqe = self.eval_train_batch(i)
                 accuracies.append(acc)
                 losses.append(loss)
@@ -486,8 +511,8 @@ class softcnn():
 
     def printGraph(self, train, test, name):
         sns.set_style("darkgrid")
-        epochs_test = [i+1 for i in range(len(test))]
-        epochs_train = [i+1 for i in range(len(train))]
+        epochs_test = [i*self.val_eval_frequency+1 for i in range(len(test))]
+        epochs_train = [i*self.train_eval_frequency+1 for i in range(len(train))]
         plt.plot(epochs_test, test, 'r', label = "Test")
         plt.plot(epochs_train, train, 'b', label = "Train")
         plt.legend(loc = "upper left")    

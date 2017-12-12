@@ -13,10 +13,10 @@ NUM_TRAINING_SAMPLES = 1235242
 NUM_VALIDATION_SAMPLES = 45000
 LEARNING_RATE = 0.002
 MODEL_NAME = ('hard_multitask-samples-{}-lr-{}'.format(NUM_TRAINING_SAMPLES, LEARNING_RATE))
-TRAIN_PATH = 'logs/train/'
-MODEL_PATH = 'logs/model'
+TRAIN_PATH = '/mnt/logs/train/'
+MODEL_PATH = '/mnt/logs/model/'
 N_TRAIN_STEPS = 1
-NUM_EPOCHS = 100
+NUM_EPOCHS = 10
 
 def model(lr = LEARNING_RATE):
     network = input_data(shape=[None, 600, 4], name='features')
@@ -72,8 +72,13 @@ def get_metrics(predictions, labels, y_conv):
 def train_conv_net(model, model_name):
     for i in range(N_TRAIN_STEPS):
         
-        x_train, y_train = get_batch(int(512), True) 
-        x_val_set, y_val_set = get_batch(int(124), False)            
+        #x_train, y_train = get_batch(int(512), True) 
+        #x_val_set, y_val_set = get_batch(int(124), False)            
+        x_train = np.load("/mnt/data/train_x.npy")
+        y_train = np.load("/mnt/data/train_y.npy")
+        x_val_set = np.load("/mnt/data/val_x.npy")
+        y_val_set = np.load("/mnt/data/val_y.npy")
+
         model.fit(x_train, y_train, n_epoch=NUM_EPOCHS, batch_size=256, validation_set=(x_val_set, y_val_set), show_metric=True, shuffle=True)
         print(metrics)
         predictions = model.predict(x_val_set)
