@@ -35,7 +35,7 @@ class hardcnn():
     initialiations
     '''
     def __init__(self, run_name, data_path, batch_size = 50, num_epochs = 100,  input_shape = [600,4], num_labels = 164,
-                 basedir = "", logdir = "", learning_rate = 0.005, weight_decay = 0.00002, if_save_model = True, save_frequency = 5, train_eval_frequency = 50, val_eval_frequency = 50, validation_iters = 10,
+                 basedir = "", logdir = "", learning_rate = 0.005, weight_decay = 0.00002, if_save_model = True, save_frequency = 1, train_eval_frequency = 50, val_eval_frequency = 50, validation_iters = 10,
                  val_batch_size = 50): #0.00000025):
 
         self.input_shape = input_shape
